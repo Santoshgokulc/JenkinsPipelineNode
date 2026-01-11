@@ -4,7 +4,9 @@ pipeline {
     */
     agent {
         docker { 
-            image 'node:20-alpine' 
+            image 'node:20-alpine'
+		// The magic fix: tell npm to use a folder inside your workspace for the cache
+            args '-v /tmp:/tmp -e HOME=${WORKSPACE}'
         }
     }
 
