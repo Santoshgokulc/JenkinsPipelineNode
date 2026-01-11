@@ -1,5 +1,5 @@
 pipeline {
-    agent none // We define specific agents for each stage
+    agent none 
 
     stages {
         // --- STAGE 1: CI (The Cooking Phase) ---
@@ -7,7 +7,6 @@ pipeline {
             agent {
                 docker { 
                     image 'node:20-alpine' 
-                    // Fixes the permission/cache issue we encountered earlier
                     args '-v /tmp:/tmp -e HOME=${WORKSPACE}'
                 }
             }
@@ -17,7 +16,7 @@ pipeline {
                 sh 'npm test -- --watchAll=false'
                 sh 'npm run build'
                 
-                // Saving the "Lunchbox" to move it out of the Docker container
+                // Saving the artifacts to move them to the WSL host
                 stash includes: 'build/**', name: 'app-artifacts'
             }
         }
@@ -26,8 +25,6 @@ pipeline {
         stage('Quality Gate') {
             steps {
                 echo 'Waiting for IT Officer approval...'
-                // This creates the Proceed (OK) and Abort (Cancel) buttons
-                // It will automatically cancel if no one clicks after 1 hour
                 timeout(time: 1, unit: 'HOURS') {
                     input message: 'Do you want to deploy this build to Production?', 
                           ok: 'Approve & Deploy'
@@ -37,35 +34,38 @@ pipeline {
 
         // --- STAGE 3: CD (The Serving Phase) ---
         stage('Deploy') {
-            agent any // This runs directly on your WSL host machine
+            agent any // Runs on your WSL host machine
             steps {
-                echo 'CD: Deploying artifacts to the Web Server...'
+                echo 'CD: Deploying to WSL Host...'
                 
-                // 1. Clean up old files on the host
-                sh 'rm -rf ./deploy_folder'
+                // 1. Clean up old files and Kill any old process on Port 3000
+                // 'fuser' is a standard Linux tool to manage port processes
+                sh 'rm -rf ./build'
+                sh 'fuser -k 3000/tcp || true'
                 
-                // 2. Retrieve the "Lunchbox" we saved in Stage 1
+                // 2. Retrieve the compiled files
                 unstash 'app-artifacts'
                 
-                // 3. Start the application in the background
-                // Using 'serve' as an example; for your exam, think of this as 'starting the service'
-                sh 'nohup npx serve -s build -l 3000 & > /dev/null'
+                // 3. Start the application using the full path
+                // We redirect output to 'deploy.log' so you can debug if it fails
+                sh 'nohup /usr/bin/npx serve -s build -l 3000 > deploy.log 2>&1 &'
+                
+                // 4. Health Check: Wait for the app to start and verify it's up
+                echo 'Running Health Check...'
+                sleep 5 // Give the server 5 seconds to wake up
+                sh 'curl -s --retry 3 http://localhost:3000 > /dev/null'
                 
                 echo 'SUCCESS: Application is live at http://localhost:3000'
             }
         }
     }
 
-    // --- POST-BUILD NOTIFICATIONS ---
     post {
-        always {
-            echo 'Cleaning up workspace...'
-        }
         failure {
-            echo 'Pipeline failed! Please check the console output for errors.'
+            echo 'Pipeline failed! Check deploy.log or Jenkins Console Output.'
         }
         aborted {
-            echo 'Deployment was cancelled by the user.'
+            echo 'Deployment was cancelled.'
         }
     }
 }
